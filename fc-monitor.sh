@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 
 # =============================================================================
-# FC SAN Traffic Monitor - Version 8.1 for Proxmox VE 
+# FC SAN Traffic Monitor for Proxmox VE 
 #
+# Script version: 8.1 
 # Tested on: Proxmox VE 9.1.x  
 # License: CC BY SA 4
 # Author: Hrvoje Horvat
