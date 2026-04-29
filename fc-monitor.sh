@@ -273,6 +273,7 @@ while true; do
     echo
     echo "----------------------------------------------------------------------------------------------------"
     echo "Legend:"
+    echo "HOST      -> Individual FC HBA port (not entire adapter)"
     echo "MP Health -> multipath checker (path liveness)"
     echo "ALUA      -> path optimality"
     echo "----[AO]      -> active/optimized"
