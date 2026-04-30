@@ -39,8 +39,8 @@
 #       = path works but is non-optimal
 #
 # Usage:
-#   chmod +x fc-monitor-v8.2.sh
-#   ./fc-monitor-v8.2.sh
+#   chmod +x fc-monitor.sh
+#   ./fc-monitor.sh
 #
 # =============================================================================
 
