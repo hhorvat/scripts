@@ -4,7 +4,7 @@
 # FC SAN Traffic Monitor 
 #
 # Script version: 8.2
-# Tested on: Proxmox VE 9.1.x  
+# Tested on: Proxmox VE: 9.1.x, 9.2.x.  
 # License: CC BY SA 4
 # Author: Hrvoje Horvat
 #
