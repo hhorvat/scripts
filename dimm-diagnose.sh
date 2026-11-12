@@ -14,6 +14,10 @@
 #   chmod +x dimm-diagnose.sh
 #   sudo ./dimm-diagnose.sh
 #
+# Script version: 0.5
+# Tested on: Proxmox VE: 9.1.x, 9.2.x.  
+# License: CC BY SA 4
+# Author: Hrvoje Horvat
 
 export LC_ALL=C
 
