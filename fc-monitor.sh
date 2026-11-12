@@ -678,7 +678,6 @@ while true; do
     TOTAL_TX_Gbps=$(awk -v mb="$TOTAL_TX_MB" 'BEGIN { printf "%.2f", mb*8/1024 }')
     TOTAL_RX_Gbps=$(awk -v mb="$TOTAL_RX_MB" 'BEGIN { printf "%.2f", mb*8/1024 }')
 
-    echo
     echo "====================================================================================="
 
     printf "Summary: TX %10s MB/s (%6s Gbps) | RX %10s MB/s (%6s Gbps)\n" \
@@ -691,45 +690,48 @@ while true; do
     display_events
 
     # -------------------------------------------------------------------------
-    # Legend - two aligned columns.
+    # Legend - two clearly separated columns.
     # -------------------------------------------------------------------------
-    echo
-    echo "---------------------------------------------------------------------"
-    echo "Legend:"
+    printf "%38s\n" "LEGEND"
+    echo "================================================================================"
 
-    printf "  %-42s | %-30s\n" \
-        "HOST        -> FC HBA port" \
-        "Drive       -> SCSI/FC path"
+    printf "  %-44s | %-44s\n" "FC / SCSI / MULTIPATH" "I/O / EVENTS"
+    echo "  --------------------------------------------+---------------------------------------------"
 
-    printf "  %-42s | %-30s\n" \
-        "Maj:min     -> Linux device numbers" \
-        "SCSI state  -> Device state"
+    printf "  %-44s | %-44s\n" \
+        "HOST          FC HBA port" \
+        "IOPS          Completed I/O per second"
 
-    printf "  %-42s | %-30s\n" \
-        "Path state  -> ALUA access_state" \
-        "Prio        -> Multipath priority"
+    printf "  %-44s | %-44s\n" \
+        "Drive         SCSI/FC path" \
+        "I/O Progress  Current I/O requests"
 
-    printf "  %-42s | %-30s\n" \
-        "Vendor/Product -> SCSI vendor, model and revision" \
-        "MP Health   -> Multipath path checker status"
+    printf "  %-44s | %-44s\n" \
+        "Maj:min       Linux device numbers" \
+        "IO-util       I/O active time (io_ticks)"
 
-    printf "  %-42s | %-30s\n" \
-        "IOPS        -> Completed I/O per second" \
-        "I/O progress -> Current I/O requests"
+    printf "  %-44s | %-44s\n" \
+        "SCSI state    Current SCSI device state" \
+        "CRITICAL      Failed I/O / transport loss"
 
-    printf "  %-42s | %-30s\n" \
-        "ALUA        -> [AO] optimized / [ANO] non-optimized" \
-        "IO-util     -> I/O active time (io_ticks)"
+    printf "  %-44s | %-44s\n" \
+        "Path state    ALUA access_state" \
+        "WARNING       Timeout / path failure"
 
-    printf "  %-42s | %-30s\n" \
-        "CRITICAL    -> Failed I/O / transport loss" \
-        "WARNING     -> Timeout / path failure"
+    printf "  %-44s | %-44s\n" \
+        "Prio          Multipath priority" \
+        "RECOVERY      Link/path restored"
 
-    printf "  %-42s | %-30s\n" \
-        "RECOVERY    -> Link/path restored" \
-        "SCSI ALERT  -> Current non-running path"
+    printf "  %-44s | %-44s\n" \
+        "Vendor/Product SCSI vendor, model, revision" \
+        "SCSI ALERT    Current non-running path"
 
-    echo "---------------------------------------------------------------------"
+    printf "  %-44s | %-44s\n" \
+        "MP Health     Multipath path checker status" \
+        "ALUA          [AO] optimized / [ANO] non-optimized"
+
+    echo "================================================================================"
+
 
     sleep "$INTERVAL"
 done
