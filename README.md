@@ -1,275 +1,379 @@
 # Linux System Diagnostics and Monitoring Scripts
 
-A collection of Bash scripts for monitoring and troubleshooting Linux server hardware, storage connectivity and memory-related errors.
+A collection of Bash-based tools for monitoring and troubleshooting
+Linux server hardware, Fibre Channel storage connectivity, SCSI paths,
+Multipath, and memory-related errors.
 
-The scripts are primarily intended for Linux server environments, including **Proxmox VE**, and provide additional visibility into hardware and kernel-level information that is not always immediately available through standard management interfaces.
+The scripts are primarily intended for Linux server environments,
+including **Proxmox VE**. They expose selected hardware and kernel-level
+information that may not be immediately visible through standard
+management interfaces.
 
-## Repository Contents
+The tools are diagnostic aids. They help identify symptoms and correlate
+information from Linux sysfs, kernel interfaces, systemd journal,
+DMI/SMBIOS, and EDAC. They do not replace vendor hardware diagnostics,
+SAN switch monitoring, or storage-array management tools.
 
-| Script | Description | Current version |
-|---|---|---:|
-| [`fc-monitor.sh`](fc-monitor.sh) | Fibre Channel, SCSI, ALUA and Multipath monitoring | 8.9.3 |
-| [`dimm-diagnose.sh`](dimm-diagnose.sh) | DIMM memory error diagnostics using DMI and EDAC | 0.6 |
-| [`dimm-mapping.conf`](dimm-mapping.conf) | vendor specific Motherboards details for DIMM diagnose| 0.2 |
+## Repository contents
 
----
+  ---------------------------------------------------------------------------------------------
+  File                                       Description                       Version / status
+  ------------------------------------------ --------------------- ----------------------------
+  [`fc-monitor.sh`](fc-monitor.sh)           Fibre Channel, SCSI,                         8.9.5
+                                             ALUA, Multipath and   
+                                             I/O monitoring        
 
-# 1. FC SAN Traffic Monitor – `fc-monitor.sh`
+  [`dimm-diagnose.sh`](dimm-diagnose.sh)     DIMM inventory and                             0.8
+                                             EDAC memory-error     
+                                             diagnostics           
 
-A real-time Fibre Channel monitoring and troubleshooting script for Linux systems.
+  [`dimm-mapping.conf`](dimm-mapping.conf)   Platform profiles and              See file header
+                                             DIMM mapping metadata 
+                                             used by               
+                                             `dimm-diagnose.sh`    
+  ---------------------------------------------------------------------------------------------
 
-The script collects information from Linux FC HBA interfaces, SCSI devices, Device Mapper Multipath, ALUA and kernel event logs.
+The scripts and configuration file are released under **Creative Commons
+Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)**.
 
-Its main purpose is to provide a consolidated view of the FC storage path, from the server's HBA ports to individual SCSI devices and Multipath logical devices.
+------------------------------------------------------------------------
 
-It is particularly useful for troubleshooting:
-- Intermittent Fibre Channel connectivity.
-- SCSI path failures and device state changes.
-- Multipath path failures and recovery.
-- ALUA path status and prioritization.
-- Storage I/O stalls and unusually high I/O latency symptoms.
-- FC transport errors and kernel-reported storage problems.
+# 1. FC SAN Traffic Monitor -- `fc-monitor.sh`
 
-### Features
+A real-time Fibre Channel monitoring and troubleshooting script for
+Linux systems.
 
-#### 1.1. FC HBA monitoring
+The script collects information from FC HBA interfaces, SCSI devices,
+Device Mapper Multipath, ALUA sysfs attributes, block-device I/O
+statistics, and kernel and multipathd journal entries.
 
-Displays information for detected Fibre Channel host bus adapters:
+Its purpose is to provide a consolidated view of the server-side FC
+storage paths, from FC HBA ports to individual SCSI devices. It is
+particularly useful when investigating:
 
-- FC host identification (`hostX`).
-- HBA operational state.
-- Configured FC link speed.
-- Transmitted traffic (TX).
-- Received traffic (RX).
+-   Intermittent Fibre Channel connectivity.
+-   SCSI path failures and device-state changes.
+-   Multipath path failures and recovery.
+-   ALUA optimized and non-optimized paths.
+-   Storage I/O stalls and outstanding requests.
+-   FC transport errors and kernel-reported storage problems.
 
-Traffic is calculated from FC port statistics exposed through sysfs.
+## 1.1. FC HBA traffic monitoring
 
-#### 1.2. FC traffic monitoring
+The script detects FC hosts exposed under:
 
-Measures FC data throughput per HBA port:
-
-- TX – traffic transmitted from the server to the SAN.
-- RX – traffic received by the server from the SAN.
-- Throughput displayed in MB/s and Gbit/s.
-- Combined TX/RX summary for all detected FC host ports.
-
-The calculation uses the FC statistics `tx_words` and `rx_words`, with each FC word representing four bytes.
-
-#### 1.3. SCSI device and path monitoring
-
-Displays information for individual SCSI devices associated with FC HBA ports.
-
-Monitored information includes:
-
-- Linux device name (`sda`, `sdb`, etc.).
-- Major/minor device numbers.
-- SCSI device state.
-- ALUA access state.
-- Multipath path priority.
-- Storage vendor, product and revision information.
-- Multipath path checker status.
-
-The script reads the current SCSI state directly from:
-
-`/sys/block/sdX/device/state`
-
-Relevant states include:
-
-- `running`
-- `blocked`
-- `offline`
-- `transport-offline`
-- `quiesce`
-- Other transitional states.
-
-This is important because a Multipath path may appear active while its corresponding SCSI device is in a problematic state.
-
-#### 1.4. ALUA monitoring
-
-Displays the ALUA access state of individual SCSI paths.
-
-Supported status indicators include:
-
-- `[AO]` – Active/Optimized.
-- `[ANO]` – Active/Non-Optimized.
-- `[--]` – Other or unavailable access state.
-
-This helps identify optimized and non-optimized paths to storage LUNs.
-
-#### 1.5. Multipath monitoring
-
-Collects information using:
-
-`multipathd show paths format`
-
-Displays:
-- Individual SCSI paths.
-- Multipath path priority.
-- Vendor/Product identification.
-- Multipath path checker status.
-
-This makes it possible to compare Multipath information with the actual SCSI device state and ALUA information.
-
-#### 1.6. Per-path I/O statistics
-
-The script monitors I/O activity for each individual SCSI device.
-
-The displayed metrics include:
-
-| Metric | Description |
-|---|---|
-| IOPS | Completed read and write operations per second. |
-| I/O in Progress | Number of I/O requests currently in progress. |
-| IO Utilization | Percentage of the measurement interval during which the device had I/O activity, based on `io_ticks`. |
-
-These metrics are useful for identifying potential storage I/O stalls.
-
-For example:
-
-```text
-IOPS:             0
-I/O in Progress:  20
-IO Utilization:   100%
-SCSI State:       blocked
+``` text
+/sys/class/fc_host/
 ```
 
-This combination indicates that I/O requests remain outstanding, while no read or write operations were completed during the measurement interval.
+For each detected FC host, it displays:
 
-It can be an important indication of an I/O processing or storage path problem. It does not, by itself, identify the underlying hardware component responsible.
+-   FC host identifier (`hostX`).
+-   A summary state derived from the ALUA state of its associated SCSI
+    paths.
+-   Transmitted traffic (TX).
+-   Received traffic (RX).
+-   Configured FC link speed.
 
-#### 1.7. Kernel and Multipath event monitoring
+**Important:** The displayed `[AO]`, `[ANO]`, or `[--]` value is an ALUA
+summary derived from the associated SCSI paths. It is not a direct FC
+HBA link-operational-state indicator.
 
-The script monitors two independent journal sources:
+Traffic is calculated from the FC port statistics:
 
-- Linux kernel journal (`journalctl -k`).
-- Multipath daemon journal (`journalctl -u multipathd`).
+``` text
+/sys/class/fc_host/hostX/statistics/tx_words
+/sys/class/fc_host/hostX/statistics/rx_words
+```
 
-Detected events are classified into three categories:
+The calculation uses four bytes per FC word. Throughput is displayed
+using decimal units:
+
+-   MB/s: 1 MB = 1,000,000 bytes.
+-   Gbit/s: 1 Gbit/s = 1,000,000,000 bits per second.
+
+The dashboard also displays combined TX and RX throughput for the
+detected FC host ports.
+
+## 1.2. SCSI device and path monitoring
+
+The script displays individual SCSI devices associated with detected FC
+hosts.
+
+For each path, it can display:
+
+-   Linux device name (`sda`, `sdb`, etc.).
+-   Major/minor device numbers.
+-   Current SCSI device state.
+-   ALUA access state.
+-   Multipath path priority.
+-   SCSI vendor, product and revision identification.
+-   Multipath path-checker status.
+
+The current SCSI state is read from:
+
+``` text
+/sys/block/sdX/device/state
+```
+
+Examples of Linux SCSI device states include:
+
+-   `running`
+-   `blocked`
+-   `offline`
+-   `transport-offline`
+-   `quiesce`
+
+The actual states available depend on the kernel and device/driver
+behavior.
+
+A Multipath path state and its corresponding SCSI device state are
+separate pieces of information. Comparing them can help identify
+inconsistencies or path problems that may not be obvious from a single
+status field.
+
+## 1.3. ALUA monitoring
+
+The script reads the ALUA access state exposed for each SCSI path, when
+available.
+
+The dashboard uses these indicators:
+
+  Indicator   Meaning
+  ----------- --------------------------------------------------
+  `[AO]`      Active/Optimized
+  `[ANO]`     Active/Non-Optimized
+  `[--]`      Other, unavailable, or unrecognized access state
+
+The host-level indicator is a summary of its associated paths:
+
+-   `[AO]` is shown when at least one running path reports
+    `active/optimized`.
+-   `[ANO]` is shown when no optimized path is found but at least one
+    running path reports `active/non-optimized`.
+-   `[--]` is shown when neither condition is confirmed.
+
+This is a monitoring summary, not a complete assessment of the storage
+array's ALUA configuration.
+
+## 1.4. Device Mapper Multipath monitoring
+
+Multipath information is collected through `multipathd`, using:
+
+``` bash
+multipathd show paths raw format
+```
+
+The script uses the following information:
+
+-   `%d` -- SCSI device name.
+-   `%p` -- path priority.
+-   `%s` -- vendor/product/revision identification.
+-   `%T` -- path-checker state.
+
+The compact dashboard uses the `MP` column for the path-checker result,
+for example `ready`. This is distinct from the ALUA access state and
+from the SCSI device state.
+
+The exact checker values depend on the configured path checker and the
+installed Device Mapper Multipath version.
+
+## 1.5. Per-path I/O statistics
+
+The script reads Linux block-device statistics from:
+
+``` text
+/sys/block/sdX/stat
+```
+
+It displays the following per-path metrics:
+
+  -----------------------------------------------------------------------
+  Metric                              Description
+  ----------------------------------- -----------------------------------
+  IOPS                                Completed read and write operations
+                                      per second, calculated over the
+                                      measured interval.
+
+  I/O                                 Number of I/O requests currently in
+                                      progress.
+
+  IO-util                             Percentage of the measured interval
+                                      represented by block-device I/O
+                                      active time, based on `io_ticks`.
+  -----------------------------------------------------------------------
+
+The script uses the actual elapsed sampling time when calculating
+throughput, IOPS, and I/O utilization. The configured refresh interval
+is therefore not necessarily identical to the measured interval, because
+processing and journal collection also take time.
+
+I/O utilization is capped at 100% in the displayed result.
+
+These metrics can help identify unusual I/O behavior. For example,
+outstanding requests combined with no completed I/O and a non-running
+SCSI state can indicate a storage-path or I/O-processing problem. These
+values do not, by themselves, identify the failing hardware component.
+
+## 1.6. Kernel and Multipath event monitoring
+
+The script independently monitors two systemd journal sources:
+
+-   Linux kernel: `journalctl -k`
+-   Multipath daemon: `journalctl -u multipathd`
+
+The initial scan reads a bounded number of recent entries. Subsequent
+scans use journal cursors to collect new entries.
+
+Matching messages are classified into three diagnostic categories.
 
 **CRITICAL**
-- `DID_TRANSPORT_DISRUPTED`
-- `DID_NO_CONNECT`
-- `DID_TIME_OUT`
-- `I/O error`
-- `Buffer I/O error`
-- `rejecting I/O to offline device`
-- `all paths down`
-- `Synchronize Cache failed`
+
+Examples include:
+
+-   `DID_TRANSPORT_DISRUPTED`
+-   `DID_NO_CONNECT`
+-   `DID_TIME_OUT`
+-   `I/O error`
+-   `Buffer I/O error`
+-   `rejecting I/O to offline device`
+-   `all paths down`
+-   `Synchronize Cache failed`
 
 **WARNING**
-- `DID_ERROR`
-- `aborting command`
-- `task abort`
-- `resetting device`
-- `checker failed`
-- `mark as failed`
-- `path down`
-- FC link-down events
-- Command timeouts.
+
+Examples include:
+
+-   `DID_ERROR`
+-   `FAILED Result:`
+-   `aborting command`
+-   `task abort`
+-   `resetting device`
+-   `checker failed`
+-   `mark as failed`
+-   `path down`
+-   FC link-down events
+-   Command and I/O timeouts
 
 **RECOVERY**
-- `Link Up Event`
-- `reinstate`
-- `reinstated`
-- `checker reports path is up`
-- Path restored or ready.
-- Device recovered or returned to running state.
 
-#### 1.8. Event grouping and duplicate filtering
+Examples include:
 
-Related events for the same SCSI device and HBA host are grouped within a configurable 120-second time window.
+-   `Link Up Event`
+-   `reinstate` or `reinstated`
+-   `checker reports path is up`
+-   Path restored or ready
+-   Device recovered or returned to running state
 
-For example, events such as:
+Classification is based on matching log-message text. It is a diagnostic
+aid, not a complete interpretation of every possible kernel or Multipath
+event.
 
-- Path down.
-- Multipath path marked as failed.
-- FC transport disruption.
-- Path reinstatement.
-- Path recovery.
+## 1.7. Event grouping and duplicate filtering
 
-can be displayed together as one grouped event rather than as multiple independent messages.
+Related events for the same SCSI device and host can be grouped when
+they occur within the configured time window.
 
-Identical event messages within a grouped incident are filtered.
+The script filters identical event messages within a grouped incident
+and retains a bounded in-memory event history.
 
-The script retains the latest 12 grouped events and uses journal cursors for incremental event collection after the initial scan.
+The default settings are:
 
-#### 1.9. SCSI ALERT
+-   Event history limit: 12 records.
+-   Initial kernel journal scan: 300 entries.
+-   Initial Multipath journal scan: 200 entries.
+-   Remembered event identifiers: 600.
+-   Event grouping window: 120 seconds.
 
-A separate section displays SCSI devices whose current state is not `running`.
+The displayed history is not a persistent event database. It is
+maintained in memory while the script is running. Journal cursors are
+used for incremental collection during that run.
+
+Events without a resolved SCSI device remain independent global events.
+
+## 1.8. SCSI ALERT
+
+The `SCSI ALERT` section reports FC-attached SCSI devices whose current
+state is not `running`.
 
 Example:
 
-```text
+``` text
 ========================================================================
 SCSI ALERT: sdd (host1) BLOCKED
 ========================================================================
 ```
 
-This section is particularly useful for identifying current SCSI path problems, independently of historical journal events or Multipath checker status.
+The check is limited to SCSI devices whose sysfs device path resolves to
+a host exposed through `/sys/class/fc_host/`. Local SATA/SAS devices
+that are not attached to an FC host are not included in this alert.
 
-### Example monitoring output
+This section reports current device state independently of the
+historical journal event list and Multipath path-checker result.
 
-The main dashboard provides a consolidated view of FC traffic and individual SCSI paths.
+## 1.9. Example monitoring output
 
-```text
-HOST     STATE             TX (MB/s / Gbps)       RX (MB/s / Gbps)       LINK
+The following is an illustrative example based on the compact dashboard
+layout used by the script. Values are examples, not live measurements.
+
+``` text
+FC SAN Traffic Monitor v8.9.5 | Refresh: 2026-11-13 13:02:26 | Interval: 5s
 ====================================================================================================
-host0    [AO]          120.50 MB/s (0.94 Gbps)  250.20 MB/s (1.95 Gbps)  16 Gbps
-
-       Drive  | Maj:min | SCSI state | Path state
-              | Prio    | Vendor/Product | MP Health
-              | IOPS    | I/O in progress | ALUA | IO-utilization
-----------------------------------------------------------------------------------------------------
-       sdb    | 8,16    | running    | active/optimized
-       sdc    | 8,32    | running    | active/non-optimized
-       sdd    | 8,48    | blocked    | active/optimized
+HOST     STATE              TX (MB/s / Gbps)           RX (MB/s / Gbps)       LINK
+====================================================================================================
+host1    [AO]           0.05 MB/s (  0.00 Gbps) |       0.00 MB/s (  0.00 Gbps)   8 Gbps
+       ---------------------------------------------------------------------------------------------------
+       Drive | Maj:min | SCSI    | Path                | Prio | Vendor/Prod.     | MP       | IOPS  | I/O | ALUA  | IO-util
+       ---------------------------------------------------------------------------------------------------
+       sdb   | 8,16    | running | active/optimized    | 50   | 3PARdata,VV,3315 | ready    | 1.0   | 0   | [AO]  | 0.4%
+       sdc   | 8,32    | running | active/optimized    | 50   | 3PARdata,VV,3315 | ready    | 1.0   | 0   | [AO]  | 1.7%
+====================================================================================================
+Summary: TX 0.05 MB/s | RX 0.00 MB/s
+====================================================================================================
 ```
 
-The output above is an illustrative example, not a live system capture.
+## 1.10. Requirements
 
-### Requirements
+-   Linux system with Fibre Channel HBA hardware.
+-   Bash with support for associative arrays.
+-   Linux kernel exposing FC and SCSI sysfs interfaces.
+-   Device Mapper Multipath and the `multipathd` service for Multipath
+    information.
+-   systemd journal and `journalctl`.
+-   Standard utilities used by the script, including `awk`, `grep`,
+    `readlink`, `date`, `sort`, `tput`, and `clear`.
 
-- Linux system with Fibre Channel HBA hardware.
-- Bash.
-- Linux kernel with FC and SCSI sysfs interfaces.
-- Device Mapper Multipath.
-- `multipathd` service.
-- `journalctl` (systemd journal).
-- `awk`, `grep`, `readlink`, `date`, `sort` and standard Linux utilities.
-- Terminal with `tput` support for display formatting.
+Root privileges are recommended so the script can read the required
+system information and journal entries.
 
-Root privileges are recommended to ensure access to all relevant system information and journal entries.
-
-### Installation and usage
+## 1.11. Installation and usage
 
 Clone the repository:
 
-```bash
+``` bash
 git clone https://github.com/hhorvat/scripts.git
 cd scripts
 ```
 
 Make the script executable:
 
-```bash
+``` bash
 chmod +x fc-monitor.sh
 ```
 
-Run:
+Run it as root:
 
-```bash
+``` bash
 sudo ./fc-monitor.sh
 ```
 
-The default monitoring refresh interval is 5 seconds.
+The default refresh interval is five seconds. Press `Ctrl+C` to exit.
 
-Press `Ctrl+C` to exit.
+## 1.12. Configuration
 
-### Configuration
+The main parameters are defined near the beginning of the script:
 
-The main monitoring parameters are defined near the beginning of the script:
-
-```bash
+``` bash
 INTERVAL=5
 WORD_SIZE=4
 
@@ -280,258 +384,386 @@ EVENT_SEEN_LIMIT=600
 EVENT_GROUP_WINDOW=120
 ```
 
-| Parameter | Description |
-|---|---|
-| `INTERVAL` | Monitoring refresh interval in seconds. |
-| `WORD_SIZE` | FC word size in bytes. |
-| `EVENT_HISTORY_LIMIT` | Maximum number of retained event records. |
-| `EVENT_SCAN_KERNEL` | Number of kernel journal entries scanned initially. |
-| `EVENT_SCAN_MULTIPATH` | Number of Multipath journal entries scanned initially. |
-| `EVENT_SEEN_LIMIT` | Maximum number of remembered event identifiers used for duplicate filtering. |
-| `EVENT_GROUP_WINDOW` | Time window in seconds for grouping related events. |
+  -----------------------------------------------------------------------
+  Parameter                           Description
+  ----------------------------------- -----------------------------------
+  `INTERVAL`                          Sleep interval between monitoring
+                                      cycles, in seconds.
 
-### Important notes
+  `WORD_SIZE`                         FC word size in bytes, used for
+                                      throughput calculations.
 
-- The script monitors individual Linux SCSI paths, not only logical Multipath devices.
-- A healthy-looking FC HBA or Multipath status does not necessarily mean that every SCSI path is healthy.
-- `IO Utilization` represents I/O active time, not maximum device performance or bandwidth utilization.
-- IOPS values are calculated from completed read and write operations between monitoring intervals.
-- Historical journal events are not necessarily indications of current failures. The separate SCSI ALERT section reports current non-running SCSI device states.
-- Event classification is based on matching kernel and Multipath log messages. It is a diagnostic aid, not a complete root-cause analysis.
-- The script does not replace vendor-specific SAN diagnostics, FC switch monitoring or storage array management tools.
+  `EVENT_HISTORY_LIMIT`               Maximum number of retained
+                                      in-memory event records.
 
----
+  `EVENT_SCAN_KERNEL`                 Number of kernel journal entries
+                                      read during the initial scan.
 
-# 2. DIMM Diagnose – `dimm-diagnose.sh`
+  `EVENT_SCAN_MULTIPATH`              Number of Multipath journal entries
+                                      read during the initial scan.
 
-A Linux memory diagnostic script designed to identify potential faulty DIMM modules using hardware inventory information and EDAC error counters.
+  `EVENT_SEEN_LIMIT`                  Maximum number of event identifiers
+                                      retained for duplicate filtering.
 
-The script combines two information sources:
+  `EVENT_GROUP_WINDOW`                Time window, in seconds, for
+                                      grouping related events.
+  -----------------------------------------------------------------------
 
-- **DMI/SMBIOS** – memory module inventory, including DIMM location, capacity and part number.
-- **EDAC (Error Detection And Correction)** – memory error counters reported by the Linux kernel.
+## 1.13. Important notes and limitations
 
-Its main purpose is to help identify which memory module or memory channel is reporting errors and, where supported, map the logical EDAC location to a physical DIMM slot.
+-   The script monitors individual Linux SCSI paths associated with FC
+    hosts; it does not replace logical Multipath device monitoring.
+-   The host-level `[AO]`/`[ANO]`/`[--]` value is an ALUA summary, not a
+    direct FC link-state indicator.
+-   `IO-util` represents block-device I/O active time. It is not a
+    measure of maximum device performance, bandwidth utilization, or
+    latency.
+-   IOPS is calculated from completed read and write operations between
+    samples.
+-   Historical journal events are not necessarily current faults. The
+    separate `SCSI ALERT` section reports current non-running
+    FC-attached SCSI devices.
+-   Event classification is based on message matching and may not
+    recognize every vendor- or driver-specific message.
+-   The script does not identify the root cause of every storage
+    problem.
+-   It does not replace FC switch monitoring, storage-array diagnostics,
+    or vendor-specific tools.
 
-The current physical slot mapping is implemented for the **HPE ProLiant BL460c Gen8** platform.
+------------------------------------------------------------------------
 
-### Features
+# 2. DIMM Diagnose -- `dimm-diagnose.sh`
 
-#### 2.1. System identification
+A Linux memory diagnostic script that combines DMI/SMBIOS inventory
+information with Linux EDAC memory-error counters.
 
-Uses `dmidecode` to identify:
+Its purpose is to help identify logical memory locations reporting
+errors and, where a platform-specific mapping has been verified,
+correlate those locations with physical DIMM slots.
 
-- System manufacturer.
-- System product name.
-- Hardware platform.
+The script uses:
 
-The script detects the HPE ProLiant BL460c Gen8 platform and enables its specific physical DIMM slot mapping.
+-   **DMI/SMBIOS** -- system and memory-module inventory, including slot
+    locator, capacity, and part number when provided by firmware.
+-   **EDAC** -- memory-controller error information and counters exposed
+    by the Linux kernel.
+-   **`dimm-mapping.conf`** -- platform profiles and mapping metadata.
 
-#### 2.2. Installed DIMM inventory
+EDAC counters identify the logical location reported by the kernel. They
+do not automatically prove that a physical DIMM is defective.
 
-Reads SMBIOS Type 17 information using:
+## 2.1. System identification
 
-```bash
+The script uses `dmidecode` to identify the system manufacturer and
+product model.
+
+It compares the detected system information with platform profiles in
+`dimm-mapping.conf`.
+
+Recognized profiles include:
+
+-   HPE ProLiant BL460c Gen8.
+-   HPE ProLiant BL460c Gen9.
+-   HPE ProLiant DL380 Gen10.
+-   Dell PowerEdge R630.
+-   Dell PowerEdge R740.
+-   Dell PowerEdge R750.
+-   Lenovo ThinkSystem SR650 (first generation).
+
+A recognized profile does not necessarily mean that physical DIMM
+mapping is supported. The mapping status must be considered separately.
+
+## 2.2. Installed DIMM inventory
+
+The script reads SMBIOS Type 17 information using:
+
+``` bash
 dmidecode -t 17
 ```
 
-Displays detected memory modules, including:
+Depending on the information supplied by system firmware, the inventory
+can include:
 
-- Processor identifier.
-- DIMM slot number.
-- Installed memory capacity.
-- Memory module part number, when available.
+-   Memory-device locator.
+-   Installed memory capacity.
+-   Memory-module part number.
+-   Other available DIMM attributes.
 
-This information provides the installed memory configuration against which EDAC error reports can be compared.
+SMBIOS data is firmware-provided. Locator strings and other fields can
+differ between server models and firmware versions.
 
-#### 2.3. EDAC memory error monitoring
+## 2.3. EDAC memory error monitoring
 
-Reads memory error counters from:
+The script reads EDAC information from:
 
-```text
+``` text
 /sys/devices/system/edac/mc/
 ```
 
-For each detected EDAC DIMM, the script collects:
+It collects available memory-controller and DIMM information, including
+corrected and uncorrected error counters.
 
-| Counter | Description |
-|---|---|
-| Corrected Errors (CE) | Memory errors detected and corrected by the hardware. |
-| Uncorrected Errors (UE) | Memory errors that could not be corrected by the hardware. |
+  -----------------------------------------------------------------------
+  Counter                             Meaning
+  ----------------------------------- -----------------------------------
+  CE -- Corrected Errors              Errors detected and corrected by
+                                      the hardware.
 
-The script identifies DIMMs with non-zero error counters and displays their EDAC labels, socket, processor, memory channel and DIMM index.
+  UE -- Uncorrected Errors            Errors reported as uncorrected by
+                                      the hardware.
+  -----------------------------------------------------------------------
 
-#### 2.4. Physical DIMM slot mapping – HPE ProLiant BL460c Gen8
+The exact EDAC attributes and labels depend on the kernel, EDAC driver,
+memory controller, and platform.
 
-For the HPE ProLiant BL460c Gen8, the script translates EDAC logical DIMM information into physical memory slot identification.
+The script reports available logical information such as EDAC label,
+socket, channel, DIMM index, and error counters.
 
-The mapping considers:
+## 2.4. Physical DIMM mapping and mapping status
 
-- Processor/socket.
-- Memory channel.
-- EDAC DIMM index.
-- Physical DIMM slot.
-- HPE physical slot designation.
+The configuration database distinguishes between a physical memory
+layout and a verified EDAC-to-physical-slot translation.
 
-The physical slot labels include:
+These concepts must not be treated as interchangeable.
 
-- P1-A through P1-H.
-- P2-A through P2-H, where applicable.
+  -----------------------------------------------------------------------
+  Mapping status                      Meaning
+  ----------------------------------- -----------------------------------
+  `VERIFIED`                          The platform-specific EDAC-to-slot
+                                      translation is implemented and has
+                                      been validated for the documented
+                                      configuration.
 
-The mapping is platform-specific and should not be assumed to apply to other server models.
+  `REFERENCE_ONLY`                    Platform layout or EDAC/SMBIOS
+                                      correlation information is
+                                      available, but physical slot
+                                      translation has not been verified.
 
-#### 2.5. Potential faulty DIMM identification
+  `UNSUPPORTED`                       No supported platform mapping is
+                                      available; report logical EDAC
+                                      information only.
+  -----------------------------------------------------------------------
 
-When non-zero EDAC error counters are detected, the script reports the corresponding logical DIMM.
+### HPE ProLiant BL460c Gen8
 
-For supported HPE BL460c Gen8 systems, it also attempts to identify the physical DIMM slot.
+The current script includes a platform-specific EDAC channel/DIMM-index
+translation for the HPE ProLiant BL460c Gen8.
 
-The report includes:
+The configuration identifies this profile as `VERIFIED`. The mapping is
+specific to the documented implementation and should still be checked
+against the target system, firmware, and EDAC driver.
 
-- EDAC label.
-- Socket and processor.
-- Memory channel.
-- DIMM index.
-- Corrected error count.
-- Uncorrected error count.
-- Physical DIMM slot, when successfully mapped.
-- DMI inventory confirmation.
-- DIMM capacity and part number, when available.
-- Error severity indication.
+### HPE ProLiant BL460c Gen9
 
-#### 2.6. Final diagnosis
+The Gen9 profile is `REFERENCE_ONLY`.
 
-The script provides a summary indicating whether potential DIMM candidates were detected.
+The script can correlate logical EDAC information with SMBIOS inventory,
+but the physical EDAC-to-slot translation has not been verified. It must
+not infer a physical DIMM slot from an unverified channel/index
+relationship.
 
-It also lists possible causes of reported memory errors:
+### Other platform profiles
 
-1. Faulty DIMM module.
-2. DIMM slot or contact problem.
-3. CPU memory controller.
-4. CPU socket.
-5. Motherboard.
+The configuration also contains reference profiles for selected HPE,
+Dell, and Lenovo systems. These profiles describe platform layouts, but
+they do not provide verified physical EDAC translations.
 
-**Important:** EDAC error counters identify the logical memory location reporting errors. They do not prove that the physical DIMM itself is defective. Further hardware diagnostics may be required.
+A profile being present in the configuration file is not proof that
+automatic physical-slot identification is supported.
 
-### Requirements
+## 2.5. Potential DIMM error identification
 
-- Linux system with EDAC support.
-- Bash.
-- `dmidecode`.
-- Root privileges.
-- Kernel EDAC sysfs interfaces available under `/sys/devices/system/edac/mc/`.
+When non-zero EDAC error counters are detected, the script reports the
+corresponding logical memory location and available inventory
+correlation.
 
-The platform-specific physical DIMM mapping currently supports HPE ProLiant BL460c Gen8.
+Depending on the platform and mapping status, the report may include:
 
-On other platforms, the script can display generic EDAC information, but physical DIMM slot mapping is not configured.
+-   EDAC label.
+-   Socket or processor identification.
+-   Memory channel.
+-   DIMM index.
+-   Corrected error count.
+-   Uncorrected error count.
+-   SMBIOS inventory match.
+-   DIMM capacity and part number, when available.
+-   Physical slot identification, only when supported by a verified
+    mapping.
 
-### Installation and usage
+The script's result should be treated as a diagnostic candidate, not a
+definitive hardware-failure verdict.
+
+## 2.6. Possible causes of memory errors
+
+Reported EDAC errors can be associated with several possible causes:
+
+1.  Faulty DIMM module.
+2.  DIMM slot or contact problem.
+3.  CPU integrated memory controller.
+4.  CPU socket or processor connection.
+5.  Motherboard or memory-channel circuitry.
+
+Further testing and vendor hardware diagnostics may be needed to
+identify the actual cause.
+
+## 2.7. Requirements
+
+-   Linux system with EDAC support exposed by the kernel.
+-   Bash.
+-   `dmidecode`.
+-   Root privileges.
+-   Readable EDAC sysfs interfaces under `/sys/devices/system/edac/mc/`.
+-   `dimm-mapping.conf` located in the same directory as
+    `dimm-diagnose.sh`.
+
+The script checks for root privileges, `dmidecode`, and the
+configuration file before proceeding.
+
+The availability and detail of EDAC information depend on platform
+firmware, kernel configuration, and the applicable EDAC driver.
+
+## 2.8. Installation and usage
 
 Clone the repository:
 
-```bash
+``` bash
 git clone https://github.com/hhorvat/scripts.git
 cd scripts
 ```
 
+Keep both required DIMM files in the same directory:
+
+``` text
+dimm-diagnose.sh
+dimm-mapping.conf
+```
+
 Make the script executable:
 
-```bash
+``` bash
 chmod +x dimm-diagnose.sh
 ```
 
-Run as root:
+Run it as root:
 
-```bash
+``` bash
 sudo ./dimm-diagnose.sh
 ```
 
-### Example output
+## 2.9. Configuration database
 
-```text
-================================================
-                 DIMM DIAGNOSTICS
-================================================
-Manufacturer : HP
-Model        : ProLiant BL460c Gen8
+The file `dimm-mapping.conf` is an INI-like data file. It is parsed by
+the script and is **not sourced or executed as Bash code**.
 
-------------------------------------------------
-INSTALLED DIMM MODULES
-------------------------------------------------
-PROC 1 DIMM 1 - 16384 MB
-  Part Number: XXXXX-XXX
+It contains platform sections with fields such as:
 
-------------------------------------------------
-EDAC DIMM COUNTERS
-------------------------------------------------
+-   Manufacturer and product matching expressions.
+-   Mapping status.
+-   Mapping scope.
+-   CPU socket and memory-channel layout information.
+-   Physical slot naming scheme.
+-   EDAC mapping entries, where a verified translation exists.
 
-Label: SrcID#0_Chan#1_DIMM#0
-Corrected errors: 15
-Uncorrected errors: 0
+Do not add an EDAC translation merely because a physical layout is
+documented. A translation must be validated against the exact server
+model, system board, processor, firmware, and EDAC driver.
 
-================================================
-              POTENTIAL FAULTY DIMMs
-================================================
+The configuration file contains comments describing its format and the
+limitations of individual profiles.
 
-EDAC LABEL: SrcID#0_Chan#1_DIMM#0
-Socket: 0
-Processor: PROC 1
-Channel: 1
-DIMM index: 0
-Corrected errors: 15
-Uncorrected errors: 0
+## 2.10. Important notes and limitations
 
-POTENTIAL DIMM:
-PROC 1 DIMM 1 (P1-A)
+-   EDAC counters are provided by the Linux kernel and depend on
+    platform firmware, memory controller, and EDAC driver support.
+-   Some systems expose controller-level errors but not detailed
+    DIMM-level counters.
+-   Corrected errors do not necessarily mean that a DIMM has failed.
+-   Uncorrected errors indicate a more serious memory problem and should
+    be investigated promptly.
+-   SMBIOS inventory is firmware-provided and may be incomplete or
+    inconsistent.
+-   A `REFERENCE_ONLY` profile must not be used to claim a verified
+    physical DIMM location.
+-   Physical slot mapping must be validated against the server
+    documentation and actual hardware.
+-   The script is a diagnostic aid and does not replace vendor hardware
+    diagnostics.
 
-DMI status: INSTALLED
-DIMM size: 16384 MB
+------------------------------------------------------------------------
 
-SEVERITY: CORRECTED ERRORS
-```
+# 3. Supported environments and platform coverage
 
-The example is illustrative. Actual EDAC labels, DIMM locations and output depend on the server platform and kernel EDAC driver.
+The scripts have different hardware and kernel-interface requirements.
 
-### Important notes
+  -----------------------------------------------------------------------
+  Environment / platform  `fc-monitor.sh`         `dimm-diagnose.sh`
+  ----------------------- ----------------------- -----------------------
+  Proxmox VE 9.x          Intended target where   Linux EDAC/DMI support
+                          FC and Multipath        required; platform
+                          interfaces are          mapping depends on
+                          available               profile
 
-- EDAC counters are provided by the kernel and depend on platform firmware, memory controller and EDAC driver support.
-- Some server platforms do not expose detailed DIMM-level counters.
-- Corrected errors do not necessarily mean that a DIMM has failed.
-- Uncorrected errors indicate a more serious memory problem and should be investigated promptly.
-- Physical slot mapping must be verified against the server's hardware documentation.
-- The script is a diagnostic aid and does not replace vendor hardware diagnostics.
+  Linux with Fibre        FC monitoring supported Not required
+  Channel HBA             when required sysfs     
+                          interfaces are exposed  
 
----
+  Linux with Device       Required for Multipath  Not required
+  Mapper Multipath        path information        
 
-# 3. Supported environments
+  HPE ProLiant BL460c     FC monitoring,          Verified
+  Gen8                    depending on installed  platform-specific EDAC
+                          FC hardware             mapping
 
-The scripts have different hardware requirements and platform dependencies.
+  HPE ProLiant BL460c     FC monitoring,          EDAC/SMBIOS correlation
+  Gen9                    depending on installed  only; physical mapping
+                          FC hardware             not verified
 
-| Environment / Platform | `fc-monitor.sh` | `dimm-diagnose.sh` |
-|---|---|---|
-| Proxmox VE 9.x | FC/SCSI monitoring target | Tested on Proxmox VE 9.1.x and 9.2.x |
-| Linux with Fibre Channel HBA | Yes, with required FC interfaces | Not required |
-| Linux with Device Mapper Multipath | Required for Multipath monitoring | Not required |
-| HPE ProLiant BL460c Gen8 | FC monitoring, depending on installed hardware | Platform-specific DIMM mapping |
-| Other Linux servers | Supported where required interfaces are available | Generic EDAC analysis, if EDAC is exposed |
+  HPE ProLiant DL380      FC monitoring,          Reference profile only
+  Gen10                   depending on installed  
+                          FC hardware             
 
-Actual functionality depends on kernel configuration, installed drivers, hardware and available sysfs interfaces.
+  Dell PowerEdge          FC monitoring,          Reference profiles only
+  R630/R740/R750          depending on installed  
+                          FC hardware             
+
+  Lenovo ThinkSystem      FC monitoring,          Reference profile only
+  SR650 (first            depending on installed  
+  generation)             FC hardware             
+
+  Other Linux servers     Supported where         Generic EDAC reporting
+                          required FC/SCSI        where supported; no
+                          interfaces are          assumed physical
+                          available               mapping
+  -----------------------------------------------------------------------
+
+The presence of a platform profile does not imply that every feature has
+been tested or that physical DIMM mapping is verified.
+
+Actual functionality depends on hardware, firmware, kernel
+configuration, drivers, and available sysfs interfaces.
+
+------------------------------------------------------------------------
 
 # 4. License
 
-Both scripts are released under the **Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA 4.0)** license.
+The scripts and associated configuration file are released under the
+**Creative Commons Attribution-ShareAlike 4.0 International (CC BY-SA
+4.0)** license.
 
 You are free to:
 
-- Share and redistribute the scripts.
-- Adapt and modify the source code.
-- Use them for personal, educational and commercial purposes.
+-   Share and redistribute the material.
+-   Adapt and modify the material.
+-   Use it for personal, educational, and commercial purposes.
 
-Under the license terms, appropriate attribution must be provided and derivative works must be distributed under the same license.
+Under the license terms, appropriate attribution must be provided and
+derivative works must be distributed under the same license.
 
 License details:
 
 https://creativecommons.org/licenses/by-sa/4.0/
+
+------------------------------------------------------------------------
 
 # 5. Author
 
@@ -543,19 +775,30 @@ Repository:
 
 https://github.com/hhorvat/scripts
 
+------------------------------------------------------------------------
+
 # 6. Feedback and contributions
 
-Feedback, bug reports, feature requests and testing results are welcome.
+Feedback, bug reports, feature requests, and testing results are
+welcome.
 
-Suggestions for additional hardware platforms, EDAC mappings, FC HBA support and storage troubleshooting features are especially appreciated.
+Suggestions for additional hardware platforms, EDAC mappings, FC HBA
+support, and storage troubleshooting features are especially
+appreciated.
 
-Please include the following information when reporting an issue:
+When reporting an issue, please include:
 
-- Linux distribution and version.
-- Kernel version.
-- Hardware model.
-- FC HBA model and driver, where applicable.
-- Script version.
-- Relevant command output and system logs.
+-   Linux distribution and version.
+-   Kernel version.
+-   Hardware model.
+-   Script version.
+-   FC HBA model and driver, where applicable.
+-   Relevant command output and system logs.
 
-Contributions that improve hardware compatibility, diagnostic accuracy and usability are welcome.
+For DIMM mapping reports, also include the available DMI/SMBIOS and EDAC
+information. Do not publish serial numbers, asset identifiers, WWNs, or
+other sensitive infrastructure details unless they have been
+appropriately redacted.
+
+Contributions that improve hardware compatibility, diagnostic accuracy,
+and usability are welcome.
