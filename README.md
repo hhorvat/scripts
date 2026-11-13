@@ -9,7 +9,8 @@ The scripts are primarily intended for Linux server environments, including **Pr
 | Script | Description | Current version |
 |---|---|---:|
 | [`fc-monitor.sh`](fc-monitor.sh) | Fibre Channel, SCSI, ALUA and Multipath monitoring | 8.9.3 |
-| [`dimm-diagnose.sh`](dimm-diagnose.sh) | DIMM memory error diagnostics using DMI and EDAC | 0.5 |
+| [`dimm-diagnose.sh`](dimm-diagnose.sh) | DIMM memory error diagnostics using DMI and EDAC | 0.6 |
+| [`dimm-mapping.conf`](dimm-mapping.conf) | vendor specific Motherboards details for DIMM diagnose| 0.2 |
 
 ---
 
