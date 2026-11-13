@@ -17,6 +17,8 @@
 #   - Dell PowerEdge R750
 #   - Lenovo ThinkSystem SR650 (1st generation)
 #
+#  Downloaad also dimm-mapping.conf
+#
 # Version: 0.6
 # Tested: Not yet validated on all listed platforms.
 # License: CC BY-SA 4.0
