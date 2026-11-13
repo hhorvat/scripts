@@ -3,7 +3,7 @@
 # =============================================================================
 # FC SAN Traffic Monitor
 #
-# Script version: 8.9.3
+# Script version: 8.9.4
 # Compatibility target: Proxmox VE 9.x
 # License: CC BY SA 4
 # Author: Hrvoje Horvat
@@ -39,7 +39,7 @@
 #
 # =============================================================================
 
-VERSION="8.9.3"
+VERSION="8.9.5"
 
 INTERVAL=5
 WORD_SIZE=4
@@ -85,8 +85,7 @@ load_multipath_map() {
         MPATH_STATUS["$dev"]="$vendor_product"
         CHECKER_STATE["$dev"]="$checker"
     done < <(
-        multipathd show paths format "%d %p %s %t" 2>/dev/null |
-            awk 'NR > 1'
+        multipathd show paths raw format "%d %p %s %T" 2>/dev/null
     )
 }
 
@@ -107,6 +106,15 @@ get_scsi_host() {
     else
         echo "-"
     fi
+}
+
+# Return success only for SCSI devices attached to an FC HBA.
+is_fc_scsi_device() {
+    local dev="$1"
+    local host
+
+    host=$(get_scsi_host "$dev")
+    [[ "$host" != "-" && -d "/sys/class/fc_host/$host" ]]
 }
 
 # -----------------------------------------------------------------------------
@@ -296,7 +304,6 @@ scan_one_journal() {
         journal_args+=(
             -b
             --after-cursor="${!cursor_name}"
-            -n 100
             --show-cursor
             --no-pager
             -o short-iso-precise
@@ -475,11 +482,15 @@ display_events() {
         [[ -d "$sdpath/device" ]] || continue
 
         sd=$(basename "$sdpath")
-        state=$(cat "$sdpath/device/state" 2>/dev/null || echo "unknown")
+        host=$(get_scsi_host "$sd")
+        # Restrict alerts to devices attached to an FC HBA.
+        is_fc_scsi_device "$sd" || continue
+
+        state=$(cat "$sdpath/device/state" 2>/dev/null) || continue
 
         if [[ "$state" != "running" ]]; then
             printf "SCSI ALERT: %s (%s) %s\n" \
-                "$sd" "$(get_scsi_host "$sd")" "${state^^}"
+                "$sd" "$host" "${state^^}"
 
             ((active_count+=1))
         fi
@@ -527,16 +538,32 @@ done
 
 tput civis 2>/dev/null
 
+# Use the actual elapsed time between samples. The loop work and journal scan
+# add to the configured sleep interval, so using INTERVAL alone under-reports
+# throughput and IOPS when a cycle takes longer than expected.
+LAST_SAMPLE_NS=$(date +%s%N)
+
 # -----------------------------------------------------------------------------
 # Main monitoring loop.
 # -----------------------------------------------------------------------------
 while true; do
+    NOW_NS=$(date +%s%N)
+    SAMPLE_MS=$(( (NOW_NS - LAST_SAMPLE_NS) / 1000000 ))
+    LAST_SAMPLE_NS=$NOW_NS
+    (( SAMPLE_MS < 1 )) && SAMPLE_MS=1
+    SAMPLE_SECONDS=$(awk -v ms="$SAMPLE_MS" 'BEGIN { printf "%.6f", ms/1000 }')
+
     load_multipath_map
     clear
 
     TOTAL_TX_DELTA=0
     TOTAL_RX_DELTA=0
 
+    # Compact table width: approximately 122 columns including indentation.
+    TABLE_RULE="       $(printf '%115s' '' | tr ' ' '-')"
+
+    printf "FC SAN Traffic Monitor v%s | Refresh: %s | Interval: %ss\n" \
+        "$VERSION" "$(date '+%Y-%m-%d %H:%M:%S')" "$INTERVAL"
     echo "===================================================================================================="
 
     printf "%-8s %-8s %26s %26s %10s\n" \
@@ -549,25 +576,34 @@ while true; do
 
         host=$(basename "$h")
         hnum=${host//host/}
-        speed=${SPEED[$host]:-0}
+        spd=$(cat "$h/speed" 2>/dev/null || echo 0)
+        speed=${spd//[^0-9]/}
+        [[ -n "$speed" ]] || speed=0
+        SPEED[$host]="$speed"
 
         tx_now=$(cat "$h/statistics/tx_words" 2>/dev/null || echo 0)
         rx_now=$(cat "$h/statistics/rx_words" 2>/dev/null || echo 0)
 
-        tx_delta=$((tx_now - ${TX_PREV[$host]:-$tx_now}))
-        rx_delta=$((rx_now - ${RX_PREV[$host]:-$rx_now}))
+        tx_prev=${TX_PREV[$host]:-$tx_now}
+        rx_prev=${RX_PREV[$host]:-$rx_now}
+        tx_delta=$((tx_now - tx_prev))
+        rx_delta=$((rx_now - rx_prev))
+        # FC counters can reset after link/HBA recovery or device reinitialization.
+        (( tx_delta < 0 )) && tx_delta=0
+        (( rx_delta < 0 )) && rx_delta=0
 
         TOTAL_TX_DELTA=$((TOTAL_TX_DELTA + tx_delta))
         TOTAL_RX_DELTA=$((TOTAL_RX_DELTA + rx_delta))
 
-        tx_MB=$(awk -v d="$tx_delta" -v i="$INTERVAL" -v w="$WORD_SIZE" \
-            'BEGIN { printf "%.2f", (d*w)/(i*1024*1024) }')
+        # Decimal MB/s and Gbit/s units (1 MB = 1,000,000 bytes).
+        tx_MB=$(awk -v d="$tx_delta" -v i="$SAMPLE_SECONDS" -v w="$WORD_SIZE" \
+            'BEGIN { printf "%.2f", (d*w)/(i*1000000) }')
 
-        rx_MB=$(awk -v d="$rx_delta" -v i="$INTERVAL" -v w="$WORD_SIZE" \
-            'BEGIN { printf "%.2f", (d*w)/(i*1024*1024) }')
+        rx_MB=$(awk -v d="$rx_delta" -v i="$SAMPLE_SECONDS" -v w="$WORD_SIZE" \
+            'BEGIN { printf "%.2f", (d*w)/(i*1000000) }')
 
-        tx_Gbps=$(awk -v mb="$tx_MB" 'BEGIN { printf "%.2f", mb*8/1024 }')
-        rx_Gbps=$(awk -v mb="$rx_MB" 'BEGIN { printf "%.2f", mb*8/1024 }')
+        tx_Gbps=$(awk -v mb="$tx_MB" 'BEGIN { printf "%.2f", mb*8/1000 }')
+        rx_Gbps=$(awk -v mb="$rx_MB" 'BEGIN { printf "%.2f", mb*8/1000 }')
 
         paths=()
 
@@ -581,30 +617,41 @@ while true; do
             fi
         done
 
-        host_state="[ANO]"
+        host_state="[--]"
+        has_ano=0
 
         for sd in "${paths[@]}"; do
             acc="/sys/block/$sd/device/access_state"
-            [[ -f "$acc" ]] || continue
+            state_file="/sys/block/$sd/device/state"
+            [[ -r "$acc" && -r "$state_file" ]] || continue
+            [[ "$(cat "$state_file" 2>/dev/null)" == "running" ]] || continue
 
-            if [[ "$(cat "$acc")" == "active/optimized" ]]; then
-                host_state="[AO]"
-                break
-            fi
+            case "$(cat "$acc" 2>/dev/null)" in
+                active/optimized)
+                    host_state="[AO]"
+                    break
+                    ;;
+                active/non-optimized)
+                    has_ano=1
+                    ;;
+            esac
         done
+        if [[ "$host_state" != "[AO]" && "$has_ano" -eq 1 ]]; then
+            host_state="[ANO]"
+        fi
 
         printf "%-8s %-8s %10s MB/s (%6s Gbps) | %10s MB/s (%6s Gbps) %8s\n" \
             "$host" "$host_state" "$tx_MB" "$tx_Gbps" \
             "$rx_MB" "$rx_Gbps" "$speed Gbps"
 
-        echo "       -------------------------------------------------------------------------------------------------------------------------------------"
+        echo "$TABLE_RULE"
 
-        printf "       %-6s | %-7s | %-11s | %-20s | %-6s | %-20s | %-9s | %-6s | %-15s | %-10s | %-14s\n" \
-            "Drive" "Maj:min" "SCSI state" "Path state" "Prio" \
-            "Vendor/Product" "MP Health" "IOPS" "I/O in progress" \
-            "ALUA" "IO-utilization"
+        # Single-line compact headings: keep both width and height down.
+        printf "       %-4s | %-7s | %-7s | %-19s | %-4s | %-16s | %-8s | %-5s | %-3s | %-5s | %-7s\n" \
+            "Drive" "Maj:min" "SCSI" "Path" "Prio" \
+            "Vendor/Prod." "MP" "IOPS" "I/O" "ALUA" "IO-util"
 
-        echo "       -------------------------------------------------------------------------------------------------------------------------------------"
+        echo "$TABLE_RULE"
 
         for sd in "${paths[@]}"; do
             majmin=$(cat "/sys/block/$sd/dev" 2>/dev/null | tr ':' ',')
@@ -627,8 +674,11 @@ while true; do
                 total=$(( ${stat_fields[0]:-0} + ${stat_fields[4]:-0} ))
                 previous_total=${IO_PREV[$sd]:-$total}
                 delta=$((total - previous_total))
+                # A re-created SCSI device may restart its statistics at zero.
+                (( delta < 0 )) && delta=0
 
-                iops=$((delta / INTERVAL))
+                iops=$(awk -v d="$delta" -v i="$SAMPLE_SECONDS" \
+                    'BEGIN { if (i > 0) printf "%.1f", d/i; else printf "n/a" }')
 
                 # Field 9: current I/O requests in progress.
                 io_in_progress=${stat_fields[8]:-0}
@@ -637,13 +687,14 @@ while true; do
                 io_ticks_now=${stat_fields[9]:-0}
                 previous_io_ticks=${IO_TICKS_PREV[$sd]:-$io_ticks_now}
                 io_ticks_delta=$((io_ticks_now - previous_io_ticks))
+                (( io_ticks_delta < 0 )) && io_ticks_delta=0
 
-                io_util=$(awk -v d="$io_ticks_delta" -v i="$INTERVAL" \
+                io_util=$(awk -v d="$io_ticks_delta" -v ms="$SAMPLE_MS" \
                     'BEGIN {
-                        if (i <= 0 || d < 0) {
+                        if (ms <= 0 || d < 0) {
                             printf "n/a"
                         } else {
-                            v = (d / (i * 1000)) * 100
+                            v = (d / ms) * 100
                             if (v > 100) v = 100
                             printf "%.1f%%", v
                         }
@@ -658,26 +709,27 @@ while true; do
                 io_util="n/a"
             fi
 
-            printf "       %-6s | %-7s | %-11s | %-20s | %-6s | %-20s | %-9s | %-6s | %-15s | %-10s | %-14s\n" \
+            printf "       %-4s | %-7s | %-7s | %-19s | %-4s | %-16s | %-8s | %-5s | %-3s | %-5s | %-7s\n" \
                 "$sd" "$majmin" "$scsi_state" "$acc" "$prio" \
                 "$mpstat" "$chk" "$iops" "$io_in_progress" "$tag" "$io_util"
         done
 
-        echo "===================================================================================================="
+        echo "$TABLE_RULE"
 
         TX_PREV[$host]=$tx_now
         RX_PREV[$host]=$rx_now
     done
 
-    TOTAL_TX_MB=$(awk -v d="$TOTAL_TX_DELTA" -v i="$INTERVAL" -v w="$WORD_SIZE" \
-        'BEGIN { printf "%.2f", (d*w)/(i*1024*1024) }')
+    TOTAL_TX_MB=$(awk -v d="$TOTAL_TX_DELTA" -v i="$SAMPLE_SECONDS" -v w="$WORD_SIZE" \
+        'BEGIN { printf "%.2f", (d*w)/(i*1000000) }')
 
-    TOTAL_RX_MB=$(awk -v d="$TOTAL_RX_DELTA" -v i="$INTERVAL" -v w="$WORD_SIZE" \
-        'BEGIN { printf "%.2f", (d*w)/(i*1024*1024) }')
+    TOTAL_RX_MB=$(awk -v d="$TOTAL_RX_DELTA" -v i="$SAMPLE_SECONDS" -v w="$WORD_SIZE" \
+        'BEGIN { printf "%.2f", (d*w)/(i*1000000) }')
 
-    TOTAL_TX_Gbps=$(awk -v mb="$TOTAL_TX_MB" 'BEGIN { printf "%.2f", mb*8/1024 }')
-    TOTAL_RX_Gbps=$(awk -v mb="$TOTAL_RX_MB" 'BEGIN { printf "%.2f", mb*8/1024 }')
+    TOTAL_TX_Gbps=$(awk -v mb="$TOTAL_TX_MB" 'BEGIN { printf "%.2f", mb*8/1000 }')
+    TOTAL_RX_Gbps=$(awk -v mb="$TOTAL_RX_MB" 'BEGIN { printf "%.2f", mb*8/1000 }')
 
+    echo
     echo "====================================================================================="
 
     printf "Summary: TX %10s MB/s (%6s Gbps) | RX %10s MB/s (%6s Gbps)\n" \
@@ -690,48 +742,27 @@ while true; do
     display_events
 
     # -------------------------------------------------------------------------
-    # Legend - two clearly separated columns.
+    # Legend - two aligned columns.
     # -------------------------------------------------------------------------
-    printf "%38s\n" "LEGEND"
-    echo "================================================================================"
-
-    printf "  %-44s | %-44s\n" "FC / SCSI / MULTIPATH" "I/O / EVENTS"
-    echo "  --------------------------------------------+---------------------------------------------"
-
-    printf "  %-44s | %-44s\n" \
-        "HOST          FC HBA port" \
-        "IOPS          Completed I/O per second"
-
-    printf "  %-44s | %-44s\n" \
-        "Drive         SCSI/FC path" \
-        "I/O Progress  Current I/O requests"
-
-    printf "  %-44s | %-44s\n" \
-        "Maj:min       Linux device numbers" \
-        "IO-util       I/O active time (io_ticks)"
-
-    printf "  %-44s | %-44s\n" \
-        "SCSI state    Current SCSI device state" \
-        "CRITICAL      Failed I/O / transport loss"
-
-    printf "  %-44s | %-44s\n" \
-        "Path state    ALUA access_state" \
-        "WARNING       Timeout / path failure"
-
-    printf "  %-44s | %-44s\n" \
-        "Prio          Multipath priority" \
-        "RECOVERY      Link/path restored"
-
-    printf "  %-44s | %-44s\n" \
-        "Vendor/Product SCSI vendor, model, revision" \
-        "SCSI ALERT    Current non-running path"
-
-    printf "  %-44s | %-44s\n" \
-        "MP Health     Multipath path checker status" \
-        "ALUA          [AO] optimized / [ANO] non-optimized"
-
-    echo "================================================================================"
-
+    echo
+    echo "+------------------------- LEGEND -----------------------------+"
+    printf "| %-29s | %-29s |\n" \
+        "HOST -> FC HBA port" "Drive -> SCSI/FC path"
+    printf "| %-29s | %-29s |\n" \
+        "Maj:min -> Linux device IDs" "SCSI -> Device state"
+    printf "| %-29s | %-29s |\n" \
+        "Path -> ALUA access state" "Prio -> Multipath priority"
+    printf "| %-29s | %-29s |\n" \
+        "Vendor/Prod. -> SCSI identity" "MP -> Path checker state"
+    printf "| %-29s | %-29s |\n" \
+        "IOPS -> Completed I/O/s" "I/O -> Requests in progress"
+    printf "| %-29s | %-29s |\n" \
+        "ALUA -> AO / ANO / unavailable" "IO-util -> Active I/O time"
+    printf "| %-29s | %-29s |\n" \
+        "CRITICAL -> I/O or transport loss" "WARNING -> Timeout/path fault"
+    printf "| %-29s | %-29s |\n" \
+        "RECOVERY -> Path/link restored" "SCSI ALERT -> Non-running path"
+    echo "+--------------------------------------------------------------+"
 
     sleep "$INTERVAL"
 done
