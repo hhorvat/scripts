@@ -1,22 +1,25 @@
-
 #!/bin/bash
 #
 # DIMM DIAGNOSE
 #
 # Linux memory error analysis using:
-#   - dmidecode
-#   - EDAC sysfs
+#   - dmidecode / SMBIOS Type 17
+#   - EDAC sysfs counters
+#   - Model identification
 #
-# Supported platform mapping:
-#   HP ProLiant BL460c Gen8
+# Implemented physical slot mapping:
+#   - HPE ProLiant BL460c Gen8
 #
-# Run:
-#   chmod +x dimm-diagnose.sh
-#   sudo ./dimm-diagnose.sh
+# Reference-only platform layouts:
+#   - HPE ProLiant DL380 Gen10
+#   - Dell PowerEdge R630
+#   - Dell PowerEdge R740
+#   - Dell PowerEdge R750
+#   - Lenovo ThinkSystem SR650 (1st generation)
 #
-# Script version: 0.5
-# Tested on: Proxmox VE: 9.1.x, 9.2.x.  
-# License: CC BY SA 4
+# Version: 0.6
+# Tested: Not yet validated on all listed platforms.
+# License: CC BY-SA 4.0
 # Author: Hrvoje Horvat
 
 export LC_ALL=C
@@ -35,30 +38,72 @@ if ! command -v dmidecode >/dev/null 2>&1; then
     exit 1
 fi
 
+EDAC_ROOT="/sys/devices/system/edac/mc"
+
+if [[ ! -d "$EDAC_ROOT" ]]; then
+    echo "WARNING: EDAC sysfs directory not found."
+    echo "The kernel may not expose EDAC memory-controller data."
+fi
+
 # ==================================================
 # 2. SYSTEM IDENTIFICATION
 # ==================================================
 
 MANUFACTURER=$(dmidecode -s system-manufacturer 2>/dev/null)
 PRODUCT=$(dmidecode -s system-product-name 2>/dev/null)
+VERSION=$(dmidecode -s system-version 2>/dev/null)
+
+MODEL="GENERIC"
+MAPPING_STATUS="NOT CONFIGURED"
+MODEL_NOTE="No platform-specific physical DIMM mapping is available."
+
+case "$PRODUCT" in
+    *"BL460c Gen8"*)
+        MODEL="HPE_BL460C_GEN8"
+        MAPPING_STATUS="IMPLEMENTED"
+        MODEL_NOTE="HPE ProLiant BL460c Gen8 physical slot mapping."
+        ;;
+    *"DL380 Gen10"*)
+        MODEL="HPE_DL380_GEN10"
+        MODEL_NOTE="12 DIMM connectors per processor; 6 memory channels."
+        ;;
+    *"PowerEdge R630"*)
+        MODEL="DELL_R630"
+        MODEL_NOTE="4 memory channels per processor; up to 3 DIMMs per channel."
+        ;;
+    *"PowerEdge R740"*)
+        MODEL="DELL_R740"
+        MODEL_NOTE="6 memory channels per processor; up to 2 DIMMs per channel."
+        ;;
+    *"PowerEdge R750"*)
+        MODEL="DELL_R750"
+        MODEL_NOTE="16 DIMM connectors per processor in documented configurations."
+        ;;
+    *"ThinkSystem SR650"*)
+        MODEL="LENOVO_SR650"
+        MODEL_NOTE="First-generation SR650 reference: 12 DIMM connectors per processor."
+        ;;
+esac
 
 echo
 echo "================================================"
 echo "                 DIMM DIAGNOSTICS"
 echo "================================================"
-
-echo "Manufacturer : $MANUFACTURER"
-echo "Model        : $PRODUCT"
-
-IS_HP_BL460=0
-
-if [[ "$PRODUCT" == *"BL460c Gen8"* ]]; then
-    IS_HP_BL460=1
-fi
+echo "Manufacturer : ${MANUFACTURER:-Unknown}"
+echo "Model        : ${PRODUCT:-Unknown}"
+echo "Version      : ${VERSION:-Unknown}"
+echo "Profile      : $MODEL"
+echo "Mapping      : $MAPPING_STATUS"
+echo
+echo "Platform note:"
+echo "$MODEL_NOTE"
 
 # ==================================================
-# 3. HP BL460c GEN8 SLOT MAPPING
+# 3. HPE BL460c GEN8 PHYSICAL SLOT MAPPING
 # ==================================================
+#
+# This is the only physical EDAC mapping implemented
+# in this version.
 #
 # Channel 1: A / E
 # Channel 2: B / F
@@ -72,20 +117,16 @@ fi
 # EDAC DIMM index:
 #   DIMM#0 = first slot in channel
 #   DIMM#1 = second slot in channel
-#
 
 declare -A SLOT_MAP
 declare -A SLOT_LETTER
 
 SLOT_MAP["1:0"]=1
 SLOT_MAP["1:1"]=2
-
 SLOT_MAP["2:0"]=3
 SLOT_MAP["2:1"]=4
-
 SLOT_MAP["3:0"]=8
 SLOT_MAP["3:1"]=7
-
 SLOT_MAP["4:0"]=6
 SLOT_MAP["4:1"]=5
 
@@ -99,7 +140,7 @@ SLOT_LETTER[7]="G"
 SLOT_LETTER[8]="C"
 
 # ==================================================
-# 4. READ INSTALLED DIMMs FROM DMI
+# 4. READ INSTALLED DIMMs FROM SMBIOS TYPE 17
 # ==================================================
 
 declare -A DIMM_INSTALLED
@@ -107,21 +148,11 @@ declare -A DIMM_SIZE
 declare -A DIMM_PART
 
 while IFS='|' read -r LOCATOR SIZE PART; do
-
     [[ -z "$LOCATOR" ]] && continue
 
-    if [[ "$LOCATOR" =~ PROC[[:space:]]*([0-9]+)[[:space:]]*DIMM[[:space:]]*([0-9]+) ]]; then
-
-        PROC="${BASH_REMATCH[1]}"
-        SLOT="${BASH_REMATCH[2]}"
-
-        KEY="${PROC}:${SLOT}"
-
-        DIMM_INSTALLED["$KEY"]=1
-        DIMM_SIZE["$KEY"]="$SIZE"
-        DIMM_PART["$KEY"]="$PART"
-
-    fi
+    DIMM_INSTALLED["$LOCATOR"]=1
+    DIMM_SIZE["$LOCATOR"]="$SIZE"
+    DIMM_PART["$LOCATOR"]="$PART"
 
 done < <(
     dmidecode -t 17 2>/dev/null |
@@ -130,14 +161,12 @@ done < <(
             RS=""
             FS="\n"
         }
-
         {
             locator=""
             size=""
             part=""
 
             for (i=1; i<=NF; i++) {
-
                 if ($i ~ /^[[:space:]]*Locator:/) {
                     sub(/^[[:space:]]*Locator:[[:space:]]*/, "", $i)
                     locator=$i
@@ -158,59 +187,49 @@ done < <(
                 size != "" &&
                 size !~ /No Module Installed/ &&
                 size != "Unknown") {
-
                 print locator "|" size "|" part
             }
         }
     '
 )
 
-# ==================================================
-# 5. DISPLAY INSTALLED DIMMs
-# ==================================================
-
 echo
 echo "------------------------------------------------"
-echo "INSTALLED DIMM MODULES"
+echo "INSTALLED DIMM MODULES (SMBIOS TYPE 17)"
 echo "------------------------------------------------"
 
 if [[ ${#DIMM_INSTALLED[@]} -eq 0 ]]; then
-
-    echo "WARNING: No installed DIMMs detected through DMI."
-
+    echo "WARNING: No installed DIMMs detected through SMBIOS."
 else
+    for LOCATOR in "${!DIMM_INSTALLED[@]}"; do
+        echo "$LOCATOR - ${DIMM_SIZE[$LOCATOR]}"
 
-    for KEY in "${!DIMM_INSTALLED[@]}"; do
-
-        PROC="${KEY%%:*}"
-        SLOT="${KEY##*:}"
-
-        echo "PROC $PROC DIMM $SLOT - ${DIMM_SIZE[$KEY]}"
-
-        if [[ -n "${DIMM_PART[$KEY]}" ]]; then
-            echo "  Part Number: ${DIMM_PART[$KEY]}"
+        if [[ -n "${DIMM_PART[$LOCATOR]}" ]]; then
+            echo "  Part Number: ${DIMM_PART[$LOCATOR]}"
         fi
-
     done | sort -V
-
 fi
 
 # ==================================================
-# 6. READ EDAC COUNTERS
+# 5. READ EDAC COUNTERS
 # ==================================================
 
 declare -A EDAC_CE
 declare -A EDAC_UE
 declare -A EDAC_LABEL
+declare -A EDAC_PATH
 
 echo
 echo "------------------------------------------------"
 echo "EDAC DIMM COUNTERS"
 echo "------------------------------------------------"
 
-for DIR in /sys/devices/system/edac/mc/mc*/dimm*; do
+EDAC_FOUND=0
 
+for DIR in "$EDAC_ROOT"/mc*/dimm*; do
     [[ -d "$DIR" ]] || continue
+
+    EDAC_FOUND=1
 
     LABEL=$(cat "$DIR/dimm_label" 2>/dev/null)
     CE=$(cat "$DIR/dimm_ce_count" 2>/dev/null)
@@ -218,14 +237,19 @@ for DIR in /sys/devices/system/edac/mc/mc*/dimm*; do
 
     CE=${CE:-0}
     UE=${UE:-0}
+    LABEL=${LABEL:-unknown}
 
     echo
-    echo "Label: ${LABEL:-unknown}"
+    echo "EDAC path: $DIR"
+    echo "Label: $LABEL"
     echo "Corrected errors: $CE"
     echo "Uncorrected errors: $UE"
 
-    if [[ "$LABEL" =~ SrcID#([0-9]+).*Chan#([0-9]+).*DIMM#([0-9]+) ]]; then
+    # This parser supports the label format used by
+    # the original script. Other EDAC drivers may
+    # expose different label formats.
 
+    if [[ "$LABEL" =~ SrcID#([0-9]+).*Chan#([0-9]+).*DIMM#([0-9]+) ]]; then
         SOCKET="${BASH_REMATCH[1]}"
         CHANNEL="${BASH_REMATCH[2]}"
         DIMM_INDEX="${BASH_REMATCH[3]}"
@@ -235,13 +259,18 @@ for DIR in /sys/devices/system/edac/mc/mc*/dimm*; do
         EDAC_CE["$KEY"]="$CE"
         EDAC_UE["$KEY"]="$UE"
         EDAC_LABEL["$KEY"]="$LABEL"
-
+        EDAC_PATH["$KEY"]="$DIR"
+    else
+        echo "NOTE: EDAC label format is not recognized by this parser."
     fi
-
 done
 
+if [[ "$EDAC_FOUND" -eq 0 ]]; then
+    echo "No EDAC DIMM directories found."
+fi
+
 # ==================================================
-# 7. ANALYZE EDAC ERRORS
+# 6. ANALYZE EDAC ERRORS
 # ==================================================
 
 echo
@@ -253,7 +282,6 @@ FOUND=0
 MAPPING_WARNING=0
 
 for KEY in "${!EDAC_CE[@]}"; do
-
     CE="${EDAC_CE[$KEY]}"
     UE="${EDAC_UE[$KEY]}"
 
@@ -265,79 +293,71 @@ for KEY in "${!EDAC_CE[@]}"; do
 
     IFS=: read -r SOCKET CHANNEL DIMM_INDEX <<< "$KEY"
 
+    # The original EDAC label convention used by this
+    # script treats SrcID as a zero-based socket index.
+    # Verify this assumption for every new EDAC driver.
     PROC=$((SOCKET + 1))
 
     echo
     echo "------------------------------------------------"
     echo "EDAC LABEL: ${EDAC_LABEL[$KEY]}"
-    echo "Socket: $SOCKET"
+    echo "Socket ID: $SOCKET"
     echo "Processor: PROC $PROC"
     echo "Channel: $CHANNEL"
     echo "DIMM index: $DIMM_INDEX"
     echo "Corrected errors: $CE"
     echo "Uncorrected errors: $UE"
 
-    if [[ "$IS_HP_BL460" -eq 1 ]]; then
-
+    if [[ "$MODEL" == "HPE_BL460C_GEN8" ]]; then
         MAP_KEY="${CHANNEL}:${DIMM_INDEX}"
         SLOT="${SLOT_MAP[$MAP_KEY]}"
 
         if [[ -z "$SLOT" ]]; then
-
-            echo "WARNING: No physical slot mapping available."
+            echo "WARNING: No physical slot mapping for this EDAC index."
             MAPPING_WARNING=1
             continue
-
         fi
 
         LETTER="${SLOT_LETTER[$SLOT]}"
-        DMI_KEY="${PROC}:${SLOT}"
+        DMI_LOCATOR="PROC $PROC DIMM $SLOT"
 
         echo
         echo "POTENTIAL DIMM:"
-        echo "PROC $PROC DIMM $SLOT (P$PROC-$LETTER)"
+        echo "$DMI_LOCATOR (P$PROC-$LETTER)"
 
-        if [[ -n "${DIMM_INSTALLED[$DMI_KEY]+x}" ]]; then
+        # Verify the corresponding DMI locator.
+        if [[ -n "${DIMM_INSTALLED[$DMI_LOCATOR]+x}" ]]; then
+            echo "SMBIOS status: INSTALLED"
+            echo "DIMM size: ${DIMM_SIZE[$DMI_LOCATOR]}"
 
-            echo "DMI status: INSTALLED"
-            echo "DIMM size: ${DIMM_SIZE[$DMI_KEY]}"
-
-            if [[ -n "${DIMM_PART[$DMI_KEY]}" ]]; then
-                echo "Part Number: ${DIMM_PART[$DMI_KEY]}"
+            if [[ -n "${DIMM_PART[$DMI_LOCATOR]}" ]]; then
+                echo "Part Number: ${DIMM_PART[$DMI_LOCATOR]}"
             fi
-
         else
-
-            echo "WARNING: DMI does not confirm this DIMM as installed."
+            echo "WARNING: SMBIOS does not confirm this DIMM locator."
             MAPPING_WARNING=1
-
         fi
-
-        if [[ "$UE" -gt 0 ]]; then
-            echo "SEVERITY: UNCORRECTED ERRORS"
-        else
-            echo "SEVERITY: CORRECTED ERRORS"
-        fi
-
-        FOUND=1
-
     else
-
         echo
-        echo "GENERIC PLATFORM"
+        echo "GENERIC / REFERENCE PLATFORM"
         echo "EDAC logical DIMM identified:"
         echo "${EDAC_LABEL[$KEY]}"
-        echo "Physical slot mapping is not configured."
-
-        FOUND=1
+        echo "Physical DIMM connector: NOT DETERMINED"
+        echo "A validated model-specific EDAC mapping is required."
         MAPPING_WARNING=1
-
     fi
 
+    if [[ "$UE" -gt 0 ]]; then
+        echo "SEVERITY: UNCORRECTED ERRORS"
+    else
+        echo "SEVERITY: CORRECTED ERRORS"
+    fi
+
+    FOUND=1
 done
 
 # ==================================================
-# 8. FINAL DIAGNOSIS
+# 7. FINAL DIAGNOSIS
 # ==================================================
 
 echo
@@ -346,18 +366,18 @@ echo "                 FINAL RESULT"
 echo "================================================"
 
 if [[ "$FOUND" -eq 1 ]]; then
-
     echo "Potential DIMM candidate(s) detected."
-
 else
+    echo "No DIMM errors detected in recognized EDAC counters."
+fi
 
-    echo "No DIMM errors detected in EDAC counters."
-
+if [[ "$EDAC_FOUND" -eq 0 ]]; then
+    echo "WARNING: EDAC data is unavailable."
 fi
 
 if [[ "$MAPPING_WARNING" -eq 1 ]]; then
     echo
-    echo "WARNING: Physical slot mapping requires verification."
+    echo "WARNING: Physical slot mapping is not fully verified."
 fi
 
 echo
@@ -367,9 +387,12 @@ echo " 2. DIMM slot or contact"
 echo " 3. CPU memory controller"
 echo " 4. CPU socket"
 echo " 5. Motherboard"
+
 echo
-echo "NOTE:"
-echo "EDAC error counters do not prove physical DIMM failure."
-echo "They identify the logical DIMM/channel reporting errors."
+echo "NOTES:"
+echo "EDAC counters do not prove physical DIMM failure."
+echo "They identify the logical memory location reporting errors."
+echo "SMBIOS Type 17 reports firmware-provided DIMM inventory."
+echo "Physical slot identification requires a validated platform map."
 echo "================================================"
 echo
